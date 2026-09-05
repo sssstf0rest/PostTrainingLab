@@ -1,0 +1,24 @@
+[project]
+name = "openposttrain-lab"
+version = "0.1.0"
+description = "From Pretrained Base Model to Instruct, Reasoning, and Agentic LLM — a hands-on post-training laboratory."
+requires-python = ">=3.10"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements/base.txt"] }
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]

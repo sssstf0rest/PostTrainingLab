@@ -1,0 +1,19 @@
+# Tier 0 + Tier 1 dependencies.
+# Works on BOTH macOS (dev machine) and Linux CUDA (training box).
+# Every line is justified in docs/training_concepts.md -> "Dependency stack".
+# Versions are pinned with >= not == for now; we freeze exact versions in M4,
+# once we have a training run whose reproducibility we actually care about.
+
+# --- Tier 0: needed for M0 (environment + config + reproducibility) ---
+torch>=2.4                 # tensors, autograd, optimizers, CUDA/MPS bindings. The engine.
+pyyaml>=6.0                # config files. Experiments must be config-driven, not argv-driven.
+
+# --- Tier 1: needed for M1 (load a base model) + M2 (data pipeline) ---
+transformers>=4.48         # model architectures, tokenizers, chat templates, from_pretrained
+huggingface_hub>=0.26      # download weights/datasets; also `hf` CLI for cache management
+datasets>=3.0              # streaming/memory-mapped dataset loading + .map() preprocessing
+tokenizers>=0.20           # fast Rust tokenizer backend used by transformers
+sentencepiece>=0.2         # tokenizer format used by several base models (Llama/Qwen lineage)
+
+# --- Utility ---
+rich>=13.0                 # readable terminal tables. We will stare at tensors a LOT.

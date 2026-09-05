@@ -1,0 +1,26 @@
+# Additional dependencies for the rented Linux + NVIDIA CUDA training box.
+# DO NOT install these on macOS — several have no arm64/macOS wheels at all.
+# Install as:  pip install -r requirements/base.txt -r requirements/gpu.txt
+#
+# Added progressively, NOT all at once. The milestone that first needs each
+# package is noted. Uncomment as we reach it.
+
+# --- M4: production SFT ---
+# accelerate>=1.0          # device placement, mixed precision, DDP/DeepSpeed launcher
+# trl>=0.12                # SFTTrainer/DPOTrainer/GRPOTrainer (only AFTER we hand-roll each)
+# wandb>=0.18              # experiment tracking: loss curves, LR, grad norm, throughput
+# flash-attn>=2.6          # fused attention. Big speed/memory win. Compiles from source; slow.
+
+# --- M5: evaluation ---
+# lm-eval>=0.4             # EleutherAI harness: standardized benchmark implementations
+# math-verify>=0.5         # symbolic answer checking for math (used again for RLVR rewards)
+
+# --- M6: PEFT ablations ---
+# peft>=0.13               # LoRA / QLoRA adapters
+# bitsandbytes>=0.44       # 4-bit / 8-bit quantization for QLoRA
+
+# --- M20: distributed training ---
+# deepspeed>=0.15          # ZeRO-1/2/3 optimizer+gradient+parameter sharding
+
+# --- M25: serving ---
+# vllm>=0.6                # paged-attention inference server; also used for fast RL rollouts

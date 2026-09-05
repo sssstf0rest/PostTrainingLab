@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Model weights & data — never commit these, they are huge and often licensed
+*.safetensors
+*.bin
+*.pt
+*.gguf
+models/
+checkpoints/
+data/raw/*
+data/processed/*
+!data/**/.gitkeep
+
+# Experiment outputs — configs and metrics ARE committed (see experiments/README),
+# but raw logs and checkpoints are not.
+experiments/*/checkpoints/
+experiments/*/logs/
+wandb/
+runs/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
