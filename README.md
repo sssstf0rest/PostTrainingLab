@@ -76,6 +76,5 @@ tests/        preprocessing, label masking, reward calculation, metrics
 |---|---|
 | [PROJECT_STATUS.md](PROJECT_STATUS.md) | Live state: current milestone, next step, decisions, open questions |
 | [docs/training_concepts.md](docs/training_concepts.md) | Technical reference — the loop, memory, precision, CUDA |
-| [docs/learning_notes.md](docs/learning_notes.md) | What was learned, per milestone |
+| [docs/learning_notes.md](docs/learning_notes.md) | What was learned, per milestone — including the interview-ready explanations |
 | [docs/experiment_log.md](docs/experiment_log.md) | Append-only record of every run |
-| [docs/interview_notes.md](docs/interview_notes.md) | Q&A grounded in work actually done here |
