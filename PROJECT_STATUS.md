@@ -9,17 +9,19 @@ Last updated: 2026-09-07
 
 ## Current milestone
 
-**M0 — Repository and environment.** Scaffold done. Training box secured and probed
-(shared company server, 8 × L20X). Python env build in progress: `.venv` created, torch
-cu128 installing. Knowledge check answered. Remaining: run `env_report.py` on real CUDA
-and replace the estimated numbers below with measurements.
+**M0 — Repository and environment. COMPLETE (2026-09-07).** Scaffold, config system,
+seeding, memory accounting, docs and tests done. Training box probed, `ptl` conda env
+built, `env_report.py` run on real CUDA, knowledge check answered.
+
+**M1 — Base-model exploration** is next.
 
 ## Completed milestones
 
 | # | Milestone | Status | Notes |
 |---|---|---|---|
-| M0 | Repository and environment | **In progress** | Local half done (structure, config, seeding, env probe, memory calculator, docs, tests). GPU half: box probed, venv created, dependency install running. |
-| M1 | Base-model exploration | Not started | Next, once torch imports. |
+| M0 | Repository and environment | **Done** | Structure, config, seeding, env probe, memory calculator, docs, tests. GPU box probed and verified: torch 2.11.0+cu128, CUDA available, bf16 True. See `docs/experiment_log.md` -> `m0-env-gpu`. |
+| M1 | Base-model exploration | **Done** | `scripts/explore_base_model.py`. Base rambles 120 tokens and never stops; Instruct answers in 9 and emits EOS. Tokenizer, logits shape and untied embeddings all verified. |
+| M2 | Data pipeline from scratch | **Next** | Chat template -> input_ids/attention_mask/labels -> assistant-only loss mask. |
 
 ## Hardware (measured 2026-09-07)
 
@@ -27,10 +29,14 @@ Shared company server, `47.101.174.157`, project at `/home/haosheng/workSpace/Po
 
 | Item | Value |
 |---|---|
-| GPUs | 8 × NVIDIA L20X, ~140 GB each, compute capability **8.9** (native bf16) |
+| GPUs | **8 × NVIDIA H200** (confirmed by the machine owner), 139.8 GB each, 132 SMs, native bf16 + FP8 |
+| Naming caveat | `nvidia-smi` reports the name as "L20X" and compute capability **8.9** — both misleading. torch reports capability **9.0 (Hopper)**, matching H200. **Trust torch**: it reads the CUDA driver API and drives kernel selection. |
+| Measured bf16 throughput | **~198 TFLOP/s** dense (8192³ matmul). Far below the ~990 TFLOP/s a full H200 specs, so **VRAM is abundant, compute is the constraint**. |
 | Driver / max CUDA | 570.172.08 / **12.8** |
 | CPU / RAM / disk | 192 cores / 2 TB / 1.1 TB free |
-| OS / Python | Ubuntu 22.04.5 / 3.10.12 |
+| OS | Ubuntu 22.04.5, glibc 2.35, kernel 5.10 |
+| Env | `/home/haosheng/.miniconda3/envs/ptl/bin/python` — Python 3.11.15, torch 2.11.0+cu128, transformers 5.14.1 |
+| Network | huggingface.co **11.3 MB/s**; download.pytorch.org / PyPI 25–110 kB/s; all CN mirrors blocked |
 | **Shared with** | 13 colleagues; other jobs run under the same UID. Pin `CUDA_VISIBLE_DEVICES`. |
 
 This is far larger than M0 assumed. Consequences: **OLMo 2 7B full fine-tuning fits on a
@@ -39,14 +45,32 @@ is directly runnable** without a second rental.
 
 ## Current experiment
 
-None. No model has been trained or downloaded yet.
+**M2 — Data pipeline from scratch** (starting). M1 is complete: see
+`docs/experiment_log.md` -> `m1-base-exploration`.
+
+Locally cached checkpoints (HF cache, 14 GB): `OLMo-2-0425-1B` (Base, fp32) plus the
+official `-SFT`, `-DPO` and `-Instruct` post-trained checkpoints (bf16). Having the whole
+official pipeline on disk means every checkpoint we train can be compared against the
+reference at the same stage.
 
 ## Next step
 
-1. `python scripts/env_report.py`
-2. `python scripts/memory_math.py --preset olmo2-1b --compare`
-3. Answer the M0 knowledge check in this file's "Open questions".
-4. Then begin M1: load `allenai/OLMo-2-0425-1B` and inspect tokenizer + logits.
+**Begin M2 — Data pipeline from scratch.** Always use the `ptl` env and pin GPUs:
+
+```bash
+export PTL_PY=/home/haosheng/.miniconda3/envs/ptl/bin/python
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader   # pick idle devices FIRST
+```
+
+1. Take a tiny hand-written conversation and push it through
+   `tokenizer.apply_chat_template()`. Print the exact string it produces.
+2. Turn that into `input_ids` and `attention_mask`; verify shapes by eye.
+3. Build `labels` and apply the **assistant-only mask** with `-100` on everything the
+   model must not be trained to produce (system, user, and the template scaffolding).
+4. Watch out for the three M1 traps: `bos == eos == 100257`, the tokenizer does NOT
+   prepend BOS but the template does, and there are 74 spare embedding rows before
+   `resize_token_embeddings()` would grow anything.
+5. Write a test in `tests/` that asserts the mask covers exactly the assistant spans.
 
 ## Key results
 
@@ -55,6 +79,10 @@ None. No model has been trained or downloaded yet.
 | Quantity | Value | Source |
 |---|---|---|
 | OLMo 2 1B parameter count (derived from architecture) | 1.485 B | `src/utils/memory.py`, agrees with published 1.48 B |
+| Driver max CUDA / torch build CUDA | 12.8 / 12.8 — matched | measured, `env_report.py` |
+| VRAM per GPU / SMs | 139.8 GB / 132 | measured, `torch.cuda.get_device_properties` |
+| bf16 supported | True | measured |
+| HF download throughput | 11.3 MB/s | measured, ranged curl |
 | Est. VRAM, full FT, bf16 + AdamW, bs=1, seq=2048 | ~27 GB | **estimate**, to be measured in M6 |
 | Est. VRAM, same with gradient checkpointing | ~25 GB | **estimate** |
 | Est. share of VRAM that is optimizer + master + grads | ~71% | **estimate** |
@@ -119,6 +147,12 @@ that were caught and are now documented:
 5. Gradient checkpointing costs ~20–40% throughput and shrinks **activations only**:
    2.25 → 0.27 GB (88% of that row), but total only 27.11 → 25.12 GB (7%), because
    activations are a small share at batch 1 / seq 2048.
+
+**RESOLVED 2026-09-08 — tied embeddings.** OLMo 2 1B has `tie_word_embeddings: False`,
+confirmed three independent ways (config flag, two separate `[100352, 2048]` tensors in
+the checkpoint, and a summed parameter count of 1.4849 B vs the 1.4850 B derived in M0).
+`src/utils/memory.py` needs no correction. See `docs/experiment_log.md` ->
+`m0-close-tied-embeddings`.
 
 **Still undecided:**
 - Which GPU to rent (A6000 48 GB vs A100 40/80 GB vs L40S). Decide at M4 using
