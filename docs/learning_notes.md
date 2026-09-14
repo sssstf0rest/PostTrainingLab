@@ -236,3 +236,31 @@ finishable at all.
 - Verify `tied_embeddings=False` against the real `config.json`.
 - See actual logits and confirm the `[batch, seq, vocab]` shape with my own eyes.
 - Watch a base model *fail* to stop generating, so "post-training" stops being abstract.
+
+
+M1:
+tokenizer is trained to learn the word spliting rules. and then it will go to vocabulary table to find the id. the vocab table is like a dictionary
+```
+    vocab = {
+        "apple": 1,
+        ...
+    }
+
+    # reverse mapping
+    vocab = {
+        1: "apple",
+        ...
+    }
+```
+
+embedding matrix shape will be: (num of vocab, num of features), i.e. (100351, 2048) in this model
+
+L2 norm: sqrt(x1^2 + x2^2 + ... + xn^2): it represent the distance of the point in 2048 dimension to the origin
+
+En = F.normalize(E.float(), dim=-1) # normalize every embedding to 1
+sims = En @ En[tid] # @ is the dot product of vectors, computing the cosine similarity
+
+logits:
+1       = one input sequence
+4       = four input tokens: ["Who", " are", " you", "?"]
+100352  = one score for every token row the model can output

@@ -328,6 +328,25 @@ Conclusion:
 - Open for M2: build the chat template + label masking pipeline, being careful about
   (a) the 74 spare embedding rows, (b) bos == eos, (c) not double-adding BOS.
 
+### M1 materials (2026-09-11) — learning method changed
+
+The blank-page-reimplementation approach was replaced at the user's request with
+annotated runnable materials. M1 was regenerated as:
+
+- `notebooks/m1_base_model_exploration.py` — 42 cells, `# %%` delimited, runs as a script
+- `notebooks/m1_base_model_exploration.ipynb` — generated from it
+- `scripts/to_ipynb.py` — stdlib-only converter (no jupyter dependency to BUILD a notebook)
+
+Contents: tokenizer and the four M2 traps; embeddings as a lookup table with cosine
+neighbours; forward pass and the `[batch, seq, vocab]` logits; softmax / entropy /
+temperature; a causality proof; the CLM loss computed by hand and matched against the
+model, with per-token breakdown; a live demonstration that `-100` positions contribute
+nothing; greedy generation and why Base never emits EOS; Base vs Instruct; and the
+boundary questions that open M2.
+
+Environment additions to the `ptl` env: `ipykernel`, `jupyterlab`, `jupytext`. Kernel
+registered as `ptl` ("Python 3 (ptl)").
+
 ---
 
 ## m2-data-pipeline
