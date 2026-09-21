@@ -17,17 +17,30 @@ Every later milestone manipulates these same objects. This script prints them.
     python scripts/explore_base_model.py --model allenai/OLMo-2-0425-1B \
         --compare allenai/OLMo-2-0425-1B-Instruct
 
-Pin GPUs before running, e.g.  CUDA_VISIBLE_DEVICES=1 python scripts/...
+Device and dtype are auto-detected (see src/utils/env.pick_device):
+    CUDA box       -> cuda, bfloat16   (refuses to run unpinned; see below)
+    Apple Silicon  -> mps,  bfloat16   (~2.97 GB resident for OLMo 2 1B)
+    anything else  -> cpu,  float32
+
+On a SHARED CUDA box, pin an idle GPU first, e.g.
+    CUDA_VISIBLE_DEVICES=1 python scripts/explore_base_model.py ...
+Override either choice with --device / --dtype.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import sys
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from src.utils.env import free_accelerator_memory, pick_device  # noqa: E402
 
 W = 78
 PROMPT = "Who are you?"
@@ -275,13 +288,17 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="allenai/OLMo-2-0425-1B")
     ap.add_argument("--compare", default=None, help="second model id, e.g. the Instruct checkpoint")
-    ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    ap.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
+    ap.add_argument("--device", default=None,
+                    help="cuda / mps / cpu. Default: auto-detect.")
+    ap.add_argument("--dtype", default=None, choices=["bfloat16", "float16", "float32"],
+                    help="Default: bfloat16 on cuda/mps, float32 on cpu.")
     ap.add_argument("--allow-any-gpu", action="store_true",
                     help="skip the CUDA_VISIBLE_DEVICES guard (only if you own the machine)")
     args = ap.parse_args()
 
-    dtype = getattr(torch, args.dtype)
+    auto_device, auto_dtype = pick_device(args.device)
+    args.device = auto_device
+    dtype = getattr(torch, args.dtype) if args.dtype else auto_dtype
 
     # --- shared-box safety -------------------------------------------------
     # "cuda" means cuda:0 = the first VISIBLE device. On a machine shared with
@@ -303,6 +320,15 @@ def main() -> None:
         print(f"CUDA_VISIBLE_DEVICES={visible or 'UNSET'}  -> torch cuda:0 is physical GPU "
               f"{visible.split(',')[0] if visible else '0'}")
         print(f"GPU: {torch.cuda.get_device_name(0)}  cc={torch.cuda.get_device_capability(0)}")
+    elif args.device == "mps":
+        # Unified memory: no separate VRAM pool, and Metal caps the working set below
+        # total system RAM. OLMo 2 1B at bf16 is ~2.97 GB, so this fits comfortably --
+        # but it is the same pool your browser is using.
+        print(f"device={args.device}  dtype={dtype}")
+        print(f"Apple Silicon unified memory; Metal working-set ceiling: "
+              f"{torch.mps.recommended_max_memory() / 1024**3:.1f} GB")
+        print("No FlashAttention / bitsandbytes / DeepSpeed here. Inspection only -- "
+              "real training starts on a CUDA box at M4.")
     else:
         print(f"device={args.device}  dtype={dtype}")
 
@@ -317,7 +343,7 @@ def main() -> None:
 
     if args.compare:
         del model
-        torch.cuda.empty_cache() if args.device.startswith("cuda") else None
+        free_accelerator_memory()
         tok2, model2 = load(args.compare, args.device, dtype)
         inspect_tokenizer(tok2, args.compare)
         inspect_model(model2, args.compare)

@@ -21,74 +21,116 @@
 # **How to use this:** run the cells top to bottom, then go back and change things.
 # The `TRY THIS` notes suggest edits whose outcome is worth predicting before you run.
 #
-# Everything here runs fine on **CPU** — this is inspection, not training.
+# Everything here is **inspection, not training**: a handful of forward passes over
+# short prompts. It runs on an Apple Silicon Mac (MPS) or on plain CPU. No GPU box
+# needed — that starts at M4.
 
 # %% [markdown]
-# ## Part 0 — Setup
+# ## Part 0 — Setup: running this on Apple Silicon
 #
-# Three environment variables matter on this machine, and they are not boilerplate:
+# This notebook runs on a MacBook (M-series). Three things differ from a CUDA box, and
+# each is worth understanding rather than copying.
 #
-# * `RAYON_NUM_THREADS` / `TOKENIZERS_PARALLELISM` — the Rust tokenizer builds a thread
-#   pool sized to the machine (192 cores here). When colleagues' jobs already hold
-#   ~16k threads under our shared UID, that allocation fails with
-#   `PanicException: The global thread pool has not been initialized ... EAGAIN`.
-#   Capping the pool avoids it.
-# * `OMP_NUM_THREADS` — same idea for the CPU math kernels underneath torch.
+# **1. Unified memory.** On a discrete NVIDIA GPU, VRAM is a physically separate pool
+# and every tensor is copied host→device. Apple Silicon has *one* pool of RAM shared by
+# CPU and GPU, so `.to("mps")` moves no bytes. The upside is no transfer cost. The
+# downside is that the "GPU memory" budget from M0 is now competing with your browser,
+# and Metal enforces a working-set ceiling *below* total RAM (printed two cells down).
 #
-# Set these **before** importing torch/transformers; several libraries read them once
-# at import time.
+# **2. `PYTORCH_ENABLE_MPS_FALLBACK=1`.** MPS does not implement every ATen operator.
+# Without this flag an unimplemented op raises `NotImplementedError` mid-run; with it,
+# that op quietly executes on CPU instead. For inspection work that is the right trade —
+# but note *quietly*: it is also how an "MPS run" becomes half a CPU run without saying so.
+#
+# **3. `TOKENIZERS_PARALLELISM=false`.** The Rust tokenizer warns loudly about its thread
+# pool after a fork. Harmless, noisy, off.
+#
+# Set these **before** importing torch/transformers — several libraries read the
+# environment once, at import time.
 
 # %%
 import os
 
-os.environ.setdefault("RAYON_NUM_THREADS", "8")
-os.environ.setdefault("OMP_NUM_THREADS", "8")
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("OMP_NUM_THREADS", "8")  # M3 has 8 cores; oversubscribing only adds contention
+
+import gc
 
 import torch
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-print("torch", torch.__version__, "| cuda build", torch.version.cuda)
+print("torch          :", torch.__version__)
+print("mps available  :", torch.backends.mps.is_available())
+print("cuda available :", torch.cuda.is_available(), " <- False on a Mac, as expected")
 
 # %% [markdown]
-# ### Choosing a device — this box is shared
+# ### Choosing device and dtype — the memory budget decides
 #
-# `"cuda"` means `cuda:0`, and **`cuda:0` is the first *visible* device, not physical
-# GPU 0.** If `CUDA_VISIBLE_DEVICES` is unset, `cuda:0` *is* physical GPU 0 — which on
-# this machine is probably a colleague's.
+# `allenai/OLMo-2-0425-1B` has **1.485 B parameters**. What that costs merely to *hold*:
 #
-# So: check what is idle first, then pin. To run on physical GPU 3, launch with
-# `CUDA_VISIBLE_DEVICES=3`; inside the process it appears as `cuda:0`.
+# | dtype | bytes/param | weights resident |
+# |---|---|---|
+# | float32 | 4 | 5.95 GB |
+# | bfloat16 | 2 | 2.97 GB |
 #
-# ```
-# nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv
-# ```
+# Against a ~12 GB Metal ceiling fp32 does fit — but Part 2 allocates another 0.8 GB for
+# the embedding similarity matrix, and Part 8 loads a **second** model. bf16 leaves real
+# headroom, runs faster, and is the dtype we will actually train in from M4.
 #
-# **CPU is the right default for this notebook.** A 1B model in fp32 is ~5.9 GB of RAM
-# and every cell here is a handful of forward passes.
+# So the default here is **MPS + bfloat16**.
+#
+# One caveat worth internalising: bf16 has **7 mantissa bits** against fp32's 23. It keeps
+# fp32's full exponent *range* — that is the entire point of bf16, see M0 — but you will
+# see the Part 6 losses agree to ~2 decimal places instead of ~6. The mechanism being
+# taught is identical; only the digits differ. Set `DEVICE, DTYPE = "cpu", torch.float32`
+# if you would rather see exact arithmetic; every cell here is small enough that CPU is
+# perfectly usable.
+#
+# (Scripts get this from `src.utils.env.pick_device()`. It is spelled out here on purpose —
+# this is the notebook where nothing should be hidden behind a helper.)
 
 # %%
-USE_GPU = False  # flip to True only after pinning CUDA_VISIBLE_DEVICES
+DEVICE, DTYPE = ("mps", torch.bfloat16) if torch.backends.mps.is_available() else ("cpu", torch.float32)
+# Override here for exact fp32 arithmetic:
+# DEVICE, DTYPE = "cpu", torch.float32
 
-if USE_GPU:
-    assert os.environ.get("CUDA_VISIBLE_DEVICES"), "Pin a GPU first — see the cell above."
-    DEVICE, DTYPE = "cuda", torch.bfloat16
-    print("visible devices:", os.environ["CUDA_VISIBLE_DEVICES"], "-> torch sees cuda:0")
-else:
-    DEVICE, DTYPE = "cpu", torch.float32
+
+def free_memory() -> None:
+    """Release torch's cached blocks back to the driver.
+
+    Both MPS and CUDA use *caching* allocators: `del tensor` returns the memory to
+    torch's own pool, where it stays reserved. Part 8 needs an explicit flush to
+    actually free room for the second model."""
+    gc.collect()
+    if DEVICE == "mps":
+        torch.mps.empty_cache()
+    elif DEVICE == "cuda":
+        torch.cuda.empty_cache()
+
 
 BASE = "allenai/OLMo-2-0425-1B"
 INSTRUCT = "allenai/OLMo-2-0425-1B-Instruct"
+
 print("device:", DEVICE, "| dtype:", DTYPE)
+if DEVICE == "mps":
+    print(f"Metal working-set ceiling: {torch.mps.recommended_max_memory() / 1024**3:.1f} GB"
+          "   <- unified memory, shared with everything else running")
 
 # %%
-# Loading reads ~5.9 GB from the HF cache; roughly a minute on CPU the first time.
+# First run downloads ~5.95 GB into ~/.cache/huggingface — the Base checkpoint ships in
+# fp32. (The Instruct one in Part 8 ships bf16 and is only ~2.98 GB.) The cast to DTYPE
+# happens during load, so at bf16 only ~2.97 GB is ever resident.
 tok = AutoTokenizer.from_pretrained(BASE)
 model = AutoModelForCausalLM.from_pretrained(BASE, dtype=DTYPE).to(DEVICE).eval()
 
 n_params = sum(p.numel() for p in model.parameters())
-print(f"parameters: {n_params:,}  ({n_params / 1e9:.4f} B)")
+resident = sum(p.numel() * p.element_size() for p in model.parameters())
+print(f"parameters      : {n_params:,}  ({n_params / 1e9:.4f} B)")
+print(f"weights resident: {resident / 1024**3:.2f} GB  ({resident / n_params:.0f} bytes/param)")
+if DEVICE == "mps":
+    print(f"mps allocated   : {torch.mps.current_allocated_memory() / 1024**3:.2f} GB")
 
 # %% [markdown]
 # ## Part 1 — The tokenizer
@@ -204,10 +246,14 @@ print("logits   :", tuple(logits.shape), "  [batch, seq, VOCAB]")
 print("dtype    :", logits.dtype)
 print(f"size     : {logits.numel() * logits.element_size() / 1e6:.1f} MB for one short prompt")
 print()
-print("Scale that up: batch 1, seq 2048, fp32 ->",
-      f"{1 * 2048 * logits.shape[-1] * 4 / 1e9:.2f} GB")
-print("...and backward needs a gradient of the same size. That is the")
-print("'Logits + their grad' row in the M0 memory table — bigger than the model.")
+print("Scale that up to a real training batch, seq 2048:")
+print(f"  in this dtype ({logits.dtype}): {1 * 2048 * logits.shape[-1] * logits.element_size() / 1e9:.2f} GB")
+print(f"  in fp32                      : {1 * 2048 * logits.shape[-1] * 4 / 1e9:.2f} GB")
+print()
+print("fp32 is the number that matters: the cross-entropy upcasts logits to fp32 for")
+print("numerical stability, and backward then needs a gradient of that same size.")
+print("That is the 'Logits + their grad' row in the M0 memory table — bigger than the")
+print("entire model, for one linear layer.")
 
 # %% [markdown]
 # ## Part 4 — Logits to probabilities
@@ -269,9 +315,14 @@ with torch.no_grad():
     la = model(input_ids=a).logits
     lb = model(input_ids=b).logits
 
+prefix_delta = (la[0, :-1].float() - lb[0, :-1].float()).abs().max().item()
+last_delta = (la[0, -1].float() - lb[0, -1].float()).abs().max().item()
+
 print("changed only the last token: ' Paris' -> ' Berlin'")
 print("logits at positions 0..n-2 identical?", torch.equal(la[0, :-1], lb[0, :-1]), " <- must be True")
+print(f"   max |difference| there          : {prefix_delta:.3e}   <- must be exactly 0")
 print("logits at the last position differ? ", not torch.equal(la[0, -1], lb[0, -1]), " <- must be True")
+print(f"   max |difference| there          : {last_delta:.3e}")
 
 # %% [markdown]
 # That is the causal mask, observed.
@@ -331,10 +382,14 @@ manual = F.cross_entropy(
 print("shift_logits:", tuple(shift_logits.shape), " [batch, seq-1, vocab]")
 print("shift_labels:", tuple(shift_labels.shape), "      [batch, seq-1]")
 print()
-print(f"model  loss : {out_l.loss.item():.4f}")
-print(f"manual loss : {manual.item():.4f}   <- identical")
+print(f"model  loss : {out_l.loss.item():.6f}")
+print(f"manual loss : {manual.item():.6f}")
+print(f"difference  : {abs(out_l.loss.item() - manual.item()):.2e}   <- ~0: same computation")
 print()
 print("  L = -(1/N) * sum_t  log P(y_t | y_<t)")
+print()
+print("Both paths upcast the logits to fp32 before the cross-entropy, so this matches")
+print("whether the model itself is running in bf16 or fp32.")
 
 # %% [markdown]
 # The mean hides the story. Per-token loss shows what the model was actually surprised by.
@@ -378,8 +433,9 @@ masked_loss = F.cross_entropy(
 kept = per_tok[-2:].mean()
 
 print("labels with -100 applied:", masked[0].tolist())
-print(f"masked loss                 : {masked_loss.item():.4f}")
-print(f"mean of the 2 kept positions: {kept.item():.4f}   <- same number")
+print(f"masked loss                 : {masked_loss.item():.6f}")
+print(f"mean of the 2 kept positions: {kept.item():.6f}")
+print(f"difference                  : {abs(masked_loss.item() - kept.item()):.2e}   <- ~0")
 print("\nThe masked positions did not contribute at all. That is M2 in one cell.")
 
 # %% [markdown]
@@ -421,10 +477,16 @@ print("-" * 70)
 # differ.** Load the officially post-trained checkpoint and ask the identical question.
 
 # %%
+# The Base model must go before the Instruct one arrives: at bf16 that is 2.97 GB each,
+# and on unified memory we are sharing ~12 GB with the rest of the machine.
+if DEVICE == "mps":
+    print(f"mps allocated before free: {torch.mps.current_allocated_memory() / 1024**3:.2f} GB")
+
 del model
-import gc; gc.collect()
-if DEVICE == "cuda":
-    torch.cuda.empty_cache()
+free_memory()
+
+if DEVICE == "mps":
+    print(f"mps allocated after  free: {torch.mps.current_allocated_memory() / 1024**3:.2f} GB")
 
 tok_i = AutoTokenizer.from_pretrained(INSTRUCT)
 model_i = AutoModelForCausalLM.from_pretrained(INSTRUCT, dtype=DTYPE).to(DEVICE).eval()

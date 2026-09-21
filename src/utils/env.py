@@ -143,12 +143,95 @@ def collect_env() -> EnvInfo:
     elif info.mps_available:
         info.accelerator = "mps"
         info.notes.append(
-            "Apple MPS backend. Fine for tokenization, inspection and tiny-model demos "
-            "(M1-M3). NOT suitable for real training: no bf16 autocast parity, no "
-            "FlashAttention, no DeepSpeed, no bitsandbytes. Rent a CUDA box for M4+."
+            "Apple MPS backend. Fine for tokenization, inspection and small-model "
+            "forward passes (M1-M3). NOT suitable for real training: no FlashAttention, "
+            "no bitsandbytes, no DeepSpeed, no multi-GPU. Use a CUDA box for M4+."
         )
-        info.bf16_supported = False
+        # M0 assumed MPS had no bf16. Probing it on torch 2.9.1 / M3 / macOS 27 shows
+        # bf16 tensors and matmuls DO work. Probe rather than assume -- the answer
+        # depends on the torch and macOS version.
+        try:
+            x = torch.ones(2, 2, dtype=torch.bfloat16, device="mps")
+            info.bf16_supported = (x @ x).dtype == torch.bfloat16
+        except Exception:
+            info.bf16_supported = False
+        try:
+            # Unified memory: the GPU has no private pool, it shares system RAM.
+            # This is the ceiling Metal will let us allocate -- the MPS analogue of VRAM.
+            info.gpus.append(
+                GPUInfo(
+                    index=0,
+                    name="Apple Silicon GPU (unified memory)",
+                    total_memory_gb=round(torch.mps.recommended_max_memory() / 1024**3, 1),
+                    capability=None,
+                )
+            )
+        except Exception:
+            pass
     else:
         info.notes.append("CPU only. Everything will work but slowly.")
 
     return info
+
+
+# ---------------------------------------------------------------------------
+# Device selection
+# ---------------------------------------------------------------------------
+def pick_device(prefer: str | None = None) -> tuple[str, "Any"]:
+    """Choose (device_string, dtype) for inference-style work on whatever box this is.
+
+    WHY A HELPER
+    ------------
+    This project runs on three very different machines -- a shared multi-GPU CUDA
+    server, an Apple Silicon laptop, and plain CPU -- and the right dtype differs on
+    each. Hardcoding "cuda" makes a script unrunnable on the laptop; hardcoding "cpu"
+    wastes an available accelerator. Decide once, here.
+
+    Defaults chosen per backend:
+      cuda -> bfloat16   native on Ampere+, and what training will actually use
+      mps  -> bfloat16   works on torch 2.9 / Apple Silicon; halves memory vs fp32,
+                         which matters because unified memory is shared with the OS
+      cpu  -> float32    CPU bf16 kernels are slow and poorly covered; fp32 is both
+                         faster here and numerically exact for the loss demos
+
+    Args:
+        prefer: force a backend ("cuda" / "mps" / "cpu"). None = auto-detect.
+
+    Returns:
+        (device, dtype) ready to hand to `.to(device)` and `from_pretrained(dtype=...)`.
+    """
+    import torch
+
+    if prefer is None:
+        if torch.cuda.is_available():
+            prefer = "cuda"
+        elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            prefer = "mps"
+        else:
+            prefer = "cpu"
+
+    dtype = {
+        "cuda": torch.bfloat16,
+        "mps": torch.bfloat16,
+        "cpu": torch.float32,
+    }[prefer.split(":")[0]]
+    return prefer, dtype
+
+
+def free_accelerator_memory() -> None:
+    """Release cached blocks on whichever backend is active.
+
+    `torch.cuda.empty_cache()` raises on a Mac; `torch.mps.empty_cache()` does not
+    exist on the CUDA box. Both allocators are caching allocators: freeing a tensor
+    returns memory to *torch's* pool, not to the driver, so an explicit flush is what
+    actually makes room before loading a second model (see M1 Part 8).
+    """
+    import gc
+
+    import torch
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        torch.mps.empty_cache()

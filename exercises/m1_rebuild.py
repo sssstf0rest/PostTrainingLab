@@ -8,13 +8,19 @@ HOW TO USE THIS FILE
 3. Run it. Every function is checked against ground truth computed a different way,
    so you get PASS/FAIL, not a feeling.
 
-    python exercises/m1_rebuild.py --device cpu --dtype float32
+    python exercises/m1_rebuild.py
 
 If you get stuck for more than ~10 minutes on one, that is a signal about which
 concept is still thin -- note WHICH one, then look it up. The stuck point is the
 information, not the failure.
 
-Everything here runs fine on CPU. No GPU needed.
+Runs as-is on a Mac: the defaults are CPU + float32, which keeps the arithmetic exact
+against the 1e-3 check tolerance. The model is ~5.95 GB in fp32 and every check is a
+single short forward pass, so CPU is fine. For a faster pass on Apple Silicon:
+
+    python exercises/m1_rebuild.py --device mps --dtype bfloat16
+
+No GPU box needed for this file.
 """
 
 from __future__ import annotations

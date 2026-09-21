@@ -50,6 +50,12 @@ def main() -> None:
     else:
         print(f"  CUDA available  : {env.cuda_available}")
         print(f"  MPS available   : {env.mps_available}")
+        print(f"  bf16 supported  : {env.bf16_supported}")
+        for g in env.gpus:
+            # On Apple Silicon this is not a separate VRAM pool: CPU and GPU share one
+            # physical memory, and Metal caps the working set below total system RAM.
+            print(f"  {g.name}")
+            print(f"         {g.total_memory_gb} GB allocatable (unified, shared with the OS)")
 
     if env.notes:
         print("-" * W)
