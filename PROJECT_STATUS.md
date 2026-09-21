@@ -21,7 +21,8 @@ built, `env_report.py` run on real CUDA, knowledge check answered.
 |---|---|---|---|
 | M0 | Repository and environment | **Done** | Structure, config, seeding, env probe, memory calculator, docs, tests. GPU box probed and verified: torch 2.11.0+cu128, CUDA available, bf16 True. See `docs/experiment_log.md` -> `m0-env-gpu`. |
 | M1 | Base-model exploration | **Done** | `scripts/explore_base_model.py`. Base rambles 120 tokens and never stops; Instruct answers in 9 and emits EOS. Tokenizer, logits shape and untied embeddings all verified. |
-| M2 | Data pipeline from scratch | **Next** | Chat template -> input_ids/attention_mask/labels -> assistant-only loss mask. |
+| M2 | Data pipeline from scratch | **Materials ready** | `notebooks/m2_data_pipeline.ipynb` (12 parts) + `tests/test_sft_masking.py`. Study the notebook, then write `src/data/sft.py` to make the tests pass. |
+| M3 | Manual SFT training loop | Not started | Feed M2's tensors through forward/backward/optimizer by hand. |
 
 ## Hardware (measured 2026-09-07)
 

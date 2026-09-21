@@ -350,5 +350,105 @@ registered as `ptl` ("Python 3 (ptl)").
 ---
 
 ## m2-data-pipeline
+Date        : 2026-09-21
+Milestone   : M2
+Question    : Which tokens does SFT actually train on, and how are the tensors built?
+Materials   : `notebooks/m2_data_pipeline.py` -> `notebooks/m2_data_pipeline.ipynb`
+              (50 cells, 12 parts), `tests/test_sft_masking.py` (18 contract tests)
+Hardware    : CPU only. M2 needs no model and no GPU -- it is entirely a tokenizer
+              exercise, which is itself the point: data bugs are invisible until
+              training silently learns the wrong thing.
+Command     : `RAYON_NUM_THREADS=8 TOKENIZERS_PARALLELISM=false OMP_NUM_THREADS=8 \
+                 python notebooks/m2_data_pipeline.py`
+
+### The three M1 boundary questions, answered
+
+1. **Is `<|assistant|>\n` learned or masked? MASKED.** At inference the template supplies
+   it via `add_generation_prompt=True` before the model runs. It is a cue to start, not
+   something to produce.
+2. **Is the final `<|endoftext|>` learned? YES -- the most consequential label in SFT.**
+   Mask it and the model never learns to stop, reproducing exactly the M1 Base-model
+   failure (120 tokens, no EOS). Instruct's 9-token answer is largely this one label.
+3. **Multi-turn: are earlier assistant turns learned? YES, all of them.** Each is a valid
+   demonstration; masking all but the last discards supervision already paid for.
+
+### Result 1 (measured) -- the masked example
+
+For `<|endoftext|><|user|>\nWhat is 2 + 2?\n<|assistant|>\n2 + 2 equals 4.<|endoftext|>`:
+
+    28 tokens total, 9 supervised, 19 masked  ->  supervision rate 32.1%
+
+Positions 0-18 are `-100` (BOS, role markers, the question). Positions 19-27 are learned:
+the answer plus its terminating EOS.
+
+### Result 2 (measured) -- role markers are NOT special tokens
+
+Checked rather than assumed, and the answer was surprising:
+
+    <|endoftext|>  -> SINGLE special token
+    <|pad|>        -> SINGLE special token
+    <|user|>       -> 5 ordinary tokens  ['<', '|', 'user', '|', '>']
+    <|assistant|>  -> 5 ordinary tokens  ['<', '|', 'assistant', '|', '>']
+    <|system|>     -> 5 ordinary tokens  ['<', '|', 'system', '|', '>']
+
+Consequences: template scaffolding costs ~5 tokens per marker (19 of our 28 tokens are
+overhead); the model had to *learn* that a 5-token sequence marks a role boundary; and it
+justifies locating assistant spans in **character space** via `offset_mapping` rather than
+by token-id matching, since `'<'` and `'|'` occur constantly in ordinary text.
+
+Ties back to M1: the embedding matrix is `[100352, 2048]` against 100278 tokenizer
+entries, so the 74 spare rows *would* fit real role tokens -- but they are randomly
+initialised and this checkpoint was post-trained with the markers split, so adding them
+would break it.
+
+### Result 3 (measured) -- `attention_mask` and `-100` are different mechanisms
+
+| | `attention_mask = 0` | `labels = -100` |
+|---|---|---|
+| effect | token invisible to attention | token produces no loss |
+| can others see it? | no | **yes** |
+| used for | padding | prompt tokens |
+
+The prompt must stay **visible** (the model has to read the question) while contributing
+**no loss** -- i.e. `attention_mask=1` with `labels=-100`. Conflating these is the most
+common M2 misconception.
+
+### Result 4 (measured) -- `-100` is excluded from the denominator, not averaged as zero
+
+On identical random logits:
+
+    loss over all tokens          : 11.9446   (27 positions)
+    loss assistant-only           : 12.2256   ( 9 positions)
+    mean over ALL positions (wrong):  4.0752
+
+`reduction='mean'` with `ignore_index=-100` returns 12.2256, matching the mean over kept
+positions -- confirming masked positions leave the denominator entirely.
+
+### Result 5 (measured) -- padding waste, dynamic vs static
+
+Three examples of 28 / 50 / 16 tokens:
+
+    dynamic      (3, 50)     94 / 150 real tokens   37.3% wasted
+    static-2048  (3, 2048)   94 / 6144 real tokens  98.5% wasted
+    packed       (94,)       94 / 94                 0% wasted
+
+Collation needs **three different fillers**: `pad_token_id` for input_ids, `0` for
+attention_mask, `-100` for labels. Using `0` in labels would train the model to emit token
+id 0 after every answer.
+
+Also demonstrated: truncating this example to 12 tokens leaves **zero** supervised tokens
+-- a training example that teaches nothing while still costing a forward pass. Real
+pipelines should drop examples whose labels are entirely `-100`.
+
+Open for the student (deliberately not implemented):
+- `src/data/sft.py` with `build_labels()` and `collate()`. `tests/test_sft_masking.py`
+  defines the contract and currently **skips** with an actionable message until that
+  module exists. Reading the notebook cell is not the same as writing the function.
+- Packing lets attention cross example boundaries by default. Whether that measurably
+  hurts is an empirical question -> M6 ablation, not an article of faith.
+
+---
+
+## m3-manual-sft-loop
 Date        : TODO
 Result      : TODO
