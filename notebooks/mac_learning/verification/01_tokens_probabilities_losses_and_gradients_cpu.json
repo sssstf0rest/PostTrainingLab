@@ -1,0 +1,21 @@
+{
+  "lesson": "01_tokens_probabilities_losses_and_gradients.ipynb",
+  "device": "cpu",
+  "quick_mode": true,
+  "status": "passed",
+  "executed_at": "2026-10-31T14:18:12.683540+08:00",
+  "source_sha256": "0ace3f486247c3cbf9c7761672a64dd06ad5dcd419ad196a9e6663171673e6d2",
+  "base_commit": "5b21b9575e14116ec2be2fe9cd16840f430a02b6",
+  "python": "3.12.15",
+  "platform": "Darwin",
+  "macOS": "27.0.1",
+  "machine": "arm64",
+  "wall_seconds_including_kernel_start_and_shutdown": 2.745,
+  "sampled_kernel_max_rss_bytes": 371228672,
+  "rss_sample_count": 50,
+  "rss_poll_seconds": 0.05,
+  "memory_limitation": "Observed maximum kernel RSS, sampled every 50 ms; excludes runner, other apps and some driver/shared memory. Not a guaranteed process/device peak.",
+  "code_cells": 20,
+  "errors": 0,
+  "network_status": "No remote assets or APIs used; HF offline flags set. Network was not globally blocked."
+}
